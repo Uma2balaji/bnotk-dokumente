@@ -24,9 +24,12 @@ public class DokumenteVO {
 	private String dokbez;// DOKBEZ
 	private Blob dokdata; // DOKDATA
 	private String landkz; // LANDKZ
+	private boolean status; //STATUS
+	private String dokumentart;//DOKUMENTART
 
 	// private BigDecimal meldnr;
 	private byte[] cryptDataByteArray;
+	private byte[] decryptDataByteArray;
 
 	private ByteArrayInputStream byteArrayInputStream;
 	private InputStream inputStream;
@@ -239,6 +242,30 @@ public class DokumenteVO {
 
 	public void setDokbez(String dokbez) {
 		this.dokbez = dokbez;
+	}
+
+	public boolean getStatus() {
+		return status;
+	}
+
+	public void setStatus(boolean status) {
+		this.status = status;
+	}
+
+	public String getDokumentart() {
+		return dokumentart;
+	}
+
+	public void setDokumentart(String dokumentart) {
+		this.dokumentart = dokumentart;
+	}
+
+	public byte[] getDecryptDataByteArray() {
+		return decryptDataByteArray;
+	}
+
+	public void setDecryptDataByteArray(byte[] decryptDataByteArray) {
+		this.decryptDataByteArray = decryptDataByteArray;
 	}
 
 }

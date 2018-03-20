@@ -1,8 +1,10 @@
 package de.wps.brav.migration.dokumente.request;
 
 import java.util.Date;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -186,13 +188,13 @@ public class Attributes {
 	 * applicationSpecificData; }
 	 */
 
-	private HashMap<String, Object> applicationSpecificData = new HashMap<String, Object>();
-
-	public HashMap<String, Object> getApplicationSpecificData() {
+	private LinkedHashMap<String, Object> applicationSpecificData = new LinkedHashMap<String, Object>();
+	@JsonAnyGetter
+	public LinkedHashMap<String, Object> getApplicationSpecificData() {
 		return applicationSpecificData;
 	}
-
-	public void setApplicationSpecificData(HashMap<String, Object> applicationSpecificData) {
+	@JsonAnySetter
+	public void setApplicationSpecificData(LinkedHashMap<String, Object> applicationSpecificData) {
 		this.applicationSpecificData = applicationSpecificData;
 	}
 

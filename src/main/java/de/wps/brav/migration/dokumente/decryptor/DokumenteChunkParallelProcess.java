@@ -5,7 +5,6 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,7 +26,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
@@ -56,7 +55,6 @@ import de.bnotk.zvr.common.rest.client.AuthenticationHeader;
 import de.bnotk.zvr.interfaces.sds.storedocument.SdsEncoding;
 import de.wps.brav.migration.dokumente.PropertiesLoader;
 import de.wps.brav.migration.dokumente.db.DataSource;
-import de.wps.brav.migration.dokumente.db.DoktypeValueMapping;
 import de.wps.brav.migration.dokumente.db.DokumenteVO;
 import de.wps.brav.migration.dokumente.db.TMPDokumenteVO;
 import de.wps.brav.migration.dokumente.request.Attributes;
@@ -72,7 +70,7 @@ public class DokumenteChunkParallelProcess {
 	private static DateFormat dfOut = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss");
 	private static Properties props;
 
-	private ExecutorService processAndWriteExecutor = Executors.newFixedThreadPool(40);
+	private ExecutorService readAndProcessExecutor = Executors.newFixedThreadPool(40);
 	private ExecutorService writeExecutor = Executors.newFixedThreadPool(100);
 	private static int sizeOfTheReadingChunk = 50;
 	private static int sizeOfTheWritingChunk = 25;
@@ -80,16 +78,19 @@ public class DokumenteChunkParallelProcess {
 	private static int executorThreadPoolSize = 40;
 	private static String selectTotalDokCountQuery = null;
 	private static String updateSDSIDPreparedStatementSQL = null;
-	private static String insertSDSIDStatusPreparedStatementSQL = null;
+	// private static String insertSDSIDStatusPreparedStatementSQL = null;
 	private static String selectCryptDataAndIdPagingQuery = null;
-	private static String selectDoktypeVmData = null;
+	// private static String selectDoktypeVmData = null;
 
 	private static String sdsRestServerURL = null;
 	private static String sdsRestServerApp = null;
 	private static String sdsRestServerUser = null;
 	private static String sdsRestServerPassword = null;
 
-	private static List<DoktypeValueMapping> listDoktypeValueMapping = new ArrayList<>();
+	private static boolean rerunable = false;
+
+	// private static List<DoktypeValueMapping> listDoktypeValueMapping = new
+	// ArrayList<>();
 
 	private static PrintStream ps = null;
 
@@ -111,15 +112,19 @@ public class DokumenteChunkParallelProcess {
 	 */
 	private static void initialisiere(String[] args) {
 		String propertiesfilePathName = args[0];
-		ps.println(dfOut.format(new Date()) + " > INFO  Properties Datei " + propertiesfilePathName + " wird geladen");
+		System.out.println(dfOut.format(new Date()) + " > " + " INFO  Properties Datei " + propertiesfilePathName
+				+ " wird geladen");
 		props = PropertiesLoader.loadProperties(propertiesfilePathName);
-		ps.println(dfOut.format(new Date()) + " > INFO  Properties Datei " + propertiesfilePathName
+		System.out.println(dfOut.format(new Date()) + " > " + " INFO  Properties Datei " + propertiesfilePathName
 				+ " wurde erfolgreich geladen");
 	}
 
 	private static void doInitialSettings() {
 		/** Initial settings - start */
-		executorThreadPoolSize = Integer.parseInt(props.getProperty("ProcessAndWriteExecutorsThreadPoolSize"));
+
+		rerunable = "true".equalsIgnoreCase(props.getProperty("rerunable"));
+
+		executorThreadPoolSize = Integer.parseInt(props.getProperty("ReadAndProcessExecutorsThreadPoolSize"));
 
 		sizeOfTheReadingChunk = Integer.parseInt(props.getProperty("sizeOfTheReadingChunkFromDokumente"));
 
@@ -127,13 +132,18 @@ public class DokumenteChunkParallelProcess {
 
 		numberOfRecordsReadFromDB = Integer.parseInt(props.getProperty("NumberOfRecordsToBeReadFromDokumente"));
 
-		selectTotalDokCountQuery = props.getProperty("selectTotalDokCountQuery");
+		if (rerunable) {
+			selectCryptDataAndIdPagingQuery = props.getProperty("SelectCryptDataAndIdPagingQuery_status_column");
+			selectTotalDokCountQuery = props.getProperty("selectTotalDokCountQuery_status_column");
+			updateSDSIDPreparedStatementSQL = props.getProperty("updateSDSIDQuery_status_column");
+		} else {
+			selectCryptDataAndIdPagingQuery = props.getProperty("SelectCryptDataAndIdPagingQuery");
+			selectTotalDokCountQuery = props.getProperty("selectTotalDokCountQuery");
+			updateSDSIDPreparedStatementSQL = props.getProperty("updateSDSIDQuery");
+		}
 
-		updateSDSIDPreparedStatementSQL = props.getProperty("updateSDSIDQuery");
-
-		insertSDSIDStatusPreparedStatementSQL = props.getProperty("insertSDSIDStatusPreparedStatementSQL");
-
-		selectCryptDataAndIdPagingQuery = props.getProperty("SelectCryptDataAndIdPagingQuery");
+		// insertSDSIDStatusPreparedStatementSQL =
+		// props.getProperty("insertSDSIDStatusPreparedStatementSQL");
 
 		sdsRestServerURL = props.getProperty("SDSRestServerURL");
 
@@ -143,7 +153,7 @@ public class DokumenteChunkParallelProcess {
 
 		sdsRestServerPassword = props.getProperty("SDSRestServerPassword");
 
-		selectDoktypeVmData = props.getProperty("selectDoktypeVmData");
+		// selectDoktypeVmData = props.getProperty("selectDoktypeVmData");
 
 		detailedLogsEnabled = "1".equalsIgnoreCase(props.getProperty("EnableDetailedLogs"));
 
@@ -157,8 +167,7 @@ public class DokumenteChunkParallelProcess {
 		Date startTime = new Date();
 		Date endTime = null;
 		int totalMeldCount = getDokCount();
-		listDoktypeValueMapping = fetchAllDokTypeValueMapping();
-		ps.println("listDoktypeValueMapping : " + listDoktypeValueMapping);
+
 		int totalIteration = (totalMeldCount / numberOfRecordsReadFromDB)
 				+ ((totalMeldCount % numberOfRecordsReadFromDB) > 0 ? 1 : 0);
 
@@ -168,8 +177,9 @@ public class DokumenteChunkParallelProcess {
 				+ "\n***********\n");
 
 		// if (detailedLogsEnabled)
-		ps.println(dfOut.format(new Date()) + " > " + " total dok count == " + totalMeldCount + " totalIteration == "
-				+ totalIteration);
+		ps.println(dfOut.format(new Date()) + " > " + " Total Dokument Count == " + totalMeldCount
+				+ " Total Iteration == " + totalIteration
+				+ " Number Of Records To Be Read From Table In One Iteration == " + numberOfRecordsReadFromDB);
 
 		/**
 		 * 1. Read All dokumente
@@ -181,9 +191,10 @@ public class DokumenteChunkParallelProcess {
 		 * 
 		 * 4. send web service request one by one
 		 * 
-		 * 5. recieve response
+		 * 5. recieve response and accumulate them
 		 * 
-		 * 6. write the access key in transformation table against which id?
+		 * 6. write/update the access key in transformation table against which
+		 * id
 		 */
 
 		for (int iteration = 0; iteration < totalIteration; iteration++) {
@@ -198,65 +209,11 @@ public class DokumenteChunkParallelProcess {
 		double totalTimeInMin = (((double) milli / 1000) / 60);
 		double averageSpeed = ((double) totalMeldCount / totalTimeInMin);
 
-		ps.println("Total time elapsed" + ((double) totalTimeInMin) + " min.");
-
 		// if(detailedLogsEnabled)
 		ps.printf(dfOut.format(new Date()) + " > "
 				+ "\n Total Records Processed : %d | Total Time Elapsed : %.3f Minutes | Average Speed : %.3f Records/Min."
 				+ "\n", totalMeldCount, totalTimeInMin, averageSpeed);
 
-		ps.println("failedresponses ");
-		for (String str : failedresponses) {
-			ps.println(str);
-		}
-
-		ps.println("Passed responses");
-		for (String str : passedresponses) {
-			ps.println(str);
-		}
-
-		ps.println("passedResponsesReq");
-		for (String str : passedResponsesReq) {
-			ps.println(str);
-		}
-
-		ps.println("nullResponseReq");
-		for (String str : nullResponseReq) {
-			ps.println(str);
-		}
-	}
-
-	private static List<DoktypeValueMapping> fetchAllDokTypeValueMapping() {
-		List<DoktypeValueMapping> list = new ArrayList<>();
-		try (Connection sourceConnection = DataSource.getInstance().getSourceConnection();
-				PreparedStatement statement = sourceConnection.prepareStatement(selectDoktypeVmData);) {
-			ResultSet rs = statement.executeQuery();
-			while (rs.next()) {
-				DoktypeValueMapping dtvm = new DoktypeValueMapping(rs.getBigDecimal("DOKTYP"),
-						rs.getString("DOKUMENTART"));
-				list.add(dtvm);
-			}
-		} catch (SQLException e) {
-			e.printStackTrace();
-		} catch (IOException e) {
-			e.printStackTrace();
-		} catch (PropertyVetoException e) {
-			e.printStackTrace();
-		}
-		return list;
-	}
-
-	private static String getDokumentenartForDoktype(BigDecimal doktype) {
-		String dokumentenart = null;
-
-		for (DoktypeValueMapping dtvm : listDoktypeValueMapping) {
-			if (dtvm.getDoktyp().compareTo(doktype) == 0) {
-				dokumentenart = dtvm.getDOKUMENTART();
-				break;
-			}
-		}
-		ps.println("doktype : " + doktype.toString() + " dokumentenart " + dokumentenart);
-		return dokumentenart;
 	}
 
 	private int iteration;
@@ -267,14 +224,14 @@ public class DokumenteChunkParallelProcess {
 
 		Date iterationStartTime = new Date();
 
-		processAndWriteExecutor = Executors.newFixedThreadPool(executorThreadPoolSize);
+		readAndProcessExecutor = Executors.newFixedThreadPool(executorThreadPoolSize);
 
 		writeExecutor = Executors
 				.newFixedThreadPool(Integer.parseInt(props.getProperty("WriteExecutorsThreadPoolSize")));
 
 		if (detailedLogsEnabled)
-			ps.println("iteration == " + iteration + " iteration*range == new offset == " + (iteration * range)
-					+ " range == " + range);
+			ps.println(dfOut.format(new Date()) + " > " + "iteration == " + iteration
+					+ " iteration*range == new offset == " + (iteration * range) + " range == " + range);
 
 		int partsOfList = (range / sizeOfTheReadingChunk) + ((range % sizeOfTheReadingChunk) > 0 ? 1 : 0);
 
@@ -296,31 +253,34 @@ public class DokumenteChunkParallelProcess {
 
 			final int a = i;
 			final int[] partss = parts;
-			final Date iterationStartTimee = iterationStartTime;
-			final Date totalProcessStartTimee = iterationStartTime;
 
 			Runnable worker = new Runnable() {
 				@Override
 				public void run() {
-					int calculatedOffset = (iteration * range) + a * sizeOfTheReadingChunk;
-					/** Changing logic for rerunnability feature */
-					// int calculatedOffset = a * sizeOfTheReadingChunk;
+					int calculatedOffset = 0;
+					if (!rerunable) {
+						calculatedOffset = (iteration * range) + a * sizeOfTheReadingChunk;
+					} else {
+						/** Changing logic for rerunnability feature */
+						calculatedOffset = a * sizeOfTheReadingChunk;
+					}
+
 					int calculatedRange = partss[a];
 					if (detailedLogsEnabled)
 						ps.println(dfOut.format(new Date()) + " > calculatedOffset == " + calculatedOffset
 								+ " calculatedRange == " + calculatedRange);
-					processAndWrite(calculatedOffset, calculatedRange, iterationStartTimee, totalProcessStartTimee);
+					processAndWrite(calculatedOffset, calculatedRange, iterationStartTime, totalProcessStartTime);
 				}
 			};
-			processAndWriteExecutor.execute(worker);
+			readAndProcessExecutor.execute(worker);
 		}
 
-		processAndWriteExecutor.shutdown();
+		readAndProcessExecutor.shutdown();
 
 		boolean b = true;
 		while (!writeExecutor.isTerminated()) {
 
-			if (b && (processAndWriteExecutor.isTerminated())) {
+			if (b && (readAndProcessExecutor.isTerminated())) {
 				writeExecutor.shutdown();
 				b = false;
 			}
@@ -336,6 +296,39 @@ public class DokumenteChunkParallelProcess {
 		if (detailedLogsEnabled)
 			ps.println(dfOut.format(new Date()) + " > New offset is :- " + (iteration + 1) * range);
 
+		// boolean printResponses=detailedLogsEnabled;
+		boolean printResponses = true;
+
+		if (printResponses && (failedresponses != null) && (failedresponses.size() > 0)) {
+			ps.println(dfOut.format(new Date()) + " > " + "failedresponses " + failedresponses.size());
+			for (String str : failedresponses) {
+				ps.println(dfOut.format(new Date()) + " > " + str);
+			}
+		}
+
+		if (detailedLogsEnabled) {
+			ps.println(dfOut.format(new Date()) + " > " + "Passed responses "
+					+ ((passedresponses != null) ? passedresponses.size() : 0));
+			for (String str : passedresponses) {
+				ps.println(dfOut.format(new Date()) + " > " + str);
+			}
+		}
+
+		if (detailedLogsEnabled) {
+			ps.println(dfOut.format(new Date()) + " > " + "passedResponsesReq "
+					+ ((passedResponsesReq != null) ? passedResponsesReq.size() : 0));
+			for (String str : passedResponsesReq) {
+				ps.println(dfOut.format(new Date()) + " > " + str);
+			}
+		}
+
+		if (printResponses && (nullResponseReq != null) && (nullResponseReq.size() > 0)) {
+			ps.println(dfOut.format(new Date()) + " > " + "nullResponseReq " + nullResponseReq.size());
+			for (String str : nullResponseReq) {
+				ps.println(dfOut.format(new Date()) + " > " + str);
+			}
+		}
+
 	}
 
 	private boolean processAndWrite(int offset, int range, Date iterationStartTime, Date totalProcessStartTime) {
@@ -350,7 +343,6 @@ public class DokumenteChunkParallelProcess {
 
 		long totalTimeInMillSecInReading = (readingEndTime.getTime() - readingStartTime.getTime());
 
-		// if (detailedLogsEnabled)
 		ps.println(dfOut.format(new Date()) + " > Time elapsed to read "
 				+ ((mvlist != null && mvlist.size() > 0) ? mvlist.size() : 0) + " records == "
 				+ ((double) totalTimeInMillSecInReading / 1000) + " seconds. ");
@@ -373,31 +365,30 @@ public class DokumenteChunkParallelProcess {
 
 		Date processingStartTime = new Date();
 
-		List<DokumenteVO> listMV = new ArrayList<DokumenteVO>();
+		List<DokumenteVO> listDokumenteVO = new ArrayList<DokumenteVO>();
 
 		for (DokumenteVO mv : mvlist) {
 			DokumenteVO mvWithStream = process(mv);
-			listMV.add(mvWithStream);
+			listDokumenteVO.add(mvWithStream);
 		}
 
 		Date processingEndTime = new Date();
 
 		long totalTimeInMillSecInProcessing = (processingEndTime.getTime() - processingStartTime.getTime());
 
-		// if (detailedLogsEnabled)
-		ps.println(dfOut.format(new Date()) + " > Time elapsed to process "
+		ps.println(dfOut.format(new Date()) + " > Time Elapsed To Process "
 				+ ((mvlist != null && mvlist.size() > 0) ? mvlist.size() : 0) + " records == "
 				+ ((double) totalTimeInMillSecInProcessing / 1000) + " seconds. ");
 
-		///////
+		/** After processing the data */
 
 		List<TMPDokumenteVO> keyList = new ArrayList<TMPDokumenteVO>();
 
-		for (DokumenteVO mv : listMV) {
-			String accessKey = uploadDocument(mv);
-			passedresponses.add(
-					"{" + "\"dokid\":" + "\"" + mv.getDokid() + "\",\"accessKey\":" + "\"" + accessKey + "\"" + "}");
-			keyList.add(new TMPDokumenteVO(mv.getDokid(), accessKey));
+		for (DokumenteVO objDokumenteVO : listDokumenteVO) {
+			String accessKey = uploadDocument(objDokumenteVO);
+			passedresponses.add("{" + "\"dokid\":" + "\"" + objDokumenteVO.getDokid() + "\",\"accessKey\":" + "\""
+					+ accessKey + "\"" + "}");
+			keyList.add(new TMPDokumenteVO(objDokumenteVO.getDokid(), accessKey));
 		}
 
 		///////
@@ -409,8 +400,6 @@ public class DokumenteChunkParallelProcess {
 					+ " sizeOfTheWritingChunk == " + sizeOfTheWritingChunk + " partsOfList == " + partsOfList);
 		for (int i = 0; i < partsOfList; i++) {
 			final int a = i;
-			final List<TMPDokumenteVO> listMVv = keyList;
-			final Date totalProcessStartTimee = totalProcessStartTime;
 
 			Runnable worker = new Runnable() {
 				@Override
@@ -418,14 +407,14 @@ public class DokumenteChunkParallelProcess {
 					int startIndex = a * sizeOfTheWritingChunk;
 					int lastIndex = startIndex + sizeOfTheWritingChunk;
 
-					if (lastIndex >= listMVv.size()) {
-						lastIndex = listMVv.size();
+					if (lastIndex >= keyList.size()) {
+						lastIndex = keyList.size();
 					}
 
 					if (detailedLogsEnabled)
-						ps.println(dfOut.format(new Date()) + " > " + a + ". keyList.size() == " + listMVv.size()
+						ps.println(dfOut.format(new Date()) + " > " + a + ". keyList.size() == " + keyList.size()
 								+ " startIndex == " + startIndex + " lastIndex == " + lastIndex);
-					write(listMVv.subList(startIndex, lastIndex), totalProcessStartTimee);
+					write(keyList.subList(startIndex, lastIndex), totalProcessStartTime);
 				}
 			};
 			writeExecutor.execute(worker);
@@ -444,11 +433,11 @@ public class DokumenteChunkParallelProcess {
 				count = rs.getInt("TOTAL_COUNT");
 			}
 		} catch (SQLException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (IOException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (PropertyVetoException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		}
 		return count;
 	}
@@ -458,7 +447,7 @@ public class DokumenteChunkParallelProcess {
 		if (detailedLogsEnabled)
 			ps.println(dfOut.format(new Date()) + " > Reading data from offset == " + offset + " range == " + range);
 
-		List<DokumenteVO> list = new ArrayList<DokumenteVO>();
+		List<DokumenteVO> listDokumenteVO = new ArrayList<DokumenteVO>();
 		try (Connection sourceConnection = DataSource.getInstance().getSourceConnection();
 				PreparedStatement statement = sourceConnection.prepareStatement(selectCryptDataAndIdPagingQuery);) {
 
@@ -467,17 +456,6 @@ public class DokumenteChunkParallelProcess {
 			ResultSet rs = statement.executeQuery();
 
 			while (rs.next()) {
-				// String id = rs.getString("DOKID");
-				// Blob cryptData = rs.getBlob("DOKDATA");
-				// byte[] blobByteArray = cryptData.getBytes((long) 1, (int)
-				// (cryptData.length()));
-				// String meldnr = rs.getString("LANDKZ");
-				// String meldid =rs.getString("MELDID");
-				// DokumenteVO mv = new DokumenteVO(id, cryptData, meldnr,
-				// meldid);
-				// mv.setCryptDataByteArray(blobByteArray);
-				// list.add(mv);
-
 				String dokid = rs.getString("DOKID");
 				BigDecimal doktyp = rs.getBigDecimal("DOKTYP");
 				Date cretms = rs.getDate("CRETMS");
@@ -491,54 +469,65 @@ public class DokumenteChunkParallelProcess {
 				String dokbez = rs.getString("DOKBEZ");
 				Blob dokdata = rs.getBlob("DOKDATA");
 				String landkz = rs.getString("LANDKZ");
+				boolean status = false;
+				if (rerunable) {
+					status = rs.getBoolean("STATUS");
+				}
+				String dokumentart = rs.getString("DOKUMENTART");
 
-				DokumenteVO mv = new DokumenteVO(dokid, doktyp, cretms, drucktms, alfrescokz, gelesentms, meldid, vmid,
-						anzseiten, bevollmnr, dokbez, dokdata, landkz);
+				DokumenteVO objDokumenteVO = new DokumenteVO(dokid, doktyp, cretms, drucktms, alfrescokz, gelesentms,
+						meldid, vmid, anzseiten, bevollmnr, dokbez, dokdata, landkz);
+				objDokumenteVO.setStatus(status);
+				objDokumenteVO.setDokumentart((dokumentart != null) ? dokumentart : "-");
 
 				byte[] blobByteArray = null;
 				if (dokdata != null) {
 					blobByteArray = dokdata.getBytes((long) 1, (int) (dokdata.length()));
 				}
 
-				mv.setCryptDataByteArray(blobByteArray);
+				objDokumenteVO.setCryptDataByteArray(blobByteArray);
 
-				list.add(mv);
+				listDokumenteVO.add(objDokumenteVO);
 
 			}
 			if (detailedLogsEnabled)
 				ps.println(dfOut.format(new Date()) + " > Reading data from offset == " + offset + " range == " + range
-						+ "Total records found :- " + list.size());
-			// statement.close();
+						+ "Total records found :- " + listDokumenteVO.size());
+
 		} catch (SQLException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (IOException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (PropertyVetoException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		}
 
-		return list;
+		return listDokumenteVO;
 	}
 
-	private DokumenteVO process(DokumenteVO mv) {
+	private DokumenteVO process(DokumenteVO objDokumenteVO) {
 
-		ByteArrayInputStream byteArrayInputStream = null;
+		// ByteArrayInputStream byteArrayInputStream = null;
 		try {
-			InputStream inputStream = new ByteArrayInputStream(mv.getCryptDataByteArray());
+			InputStream inputStream = new ByteArrayInputStream(objDokumenteVO.getCryptDataByteArray());
 			ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
 			decryptStreamData(inputStream, byteArrayOutputStream);
 
-			byteArrayInputStream = new ByteArrayInputStream(byteArrayOutputStream.toByteArray());
+			// byteArrayInputStream = new
+			// ByteArrayInputStream(byteArrayOutputStream.toByteArray());
 
-			mv.setByteArrayInputStream(byteArrayInputStream);
+			objDokumenteVO.setDecryptDataByteArray(byteArrayOutputStream.toByteArray());
+
+			// objDokumenteVO.setByteArrayInputStream(byteArrayInputStream);
+
 			inputStream.close();
 			byteArrayOutputStream.close();
 
 		} catch (IOException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		}
 
-		return mv;
+		return objDokumenteVO;
 	}
 
 	private void decryptStreamData(InputStream is, OutputStream os) {
@@ -570,8 +559,8 @@ public class DokumenteChunkParallelProcess {
 			cos.flush();
 			cos.close();
 
-			// ps.println(dfOut.format(new Date()) + " > INFO
-			// Deschifrierung erfolgreich durchgef�hrt");
+			if (detailedLogsEnabled)
+				ps.println(dfOut.format(new Date()) + " > INFO Deschifrierung erfolgreich durchgef�hrt");
 
 			ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
 			ZipInputStream zis = new ZipInputStream(new BufferedInputStream(bais));
@@ -584,26 +573,29 @@ public class DokumenteChunkParallelProcess {
 			while ((count = zis.read(data, 0, UNZIP_BUFFER_SIZE)) != -1) {
 				dest.write(data, 0, count);
 			}
+
 			dest.flush();
 			dest.close();
 			zis.close();
 			baos.close();
 			bais.close();
 
-			// ps.println(dfOut.format(new Date()) + " > INFO
-			// Dearchivierung erfolgreich durchgef�hrt");
-		} catch (InvalidKeySpecException e) {
-			e.printStackTrace();
+			if (detailedLogsEnabled)
+				ps.println(dfOut.format(new Date()) + " > INFO Dearchivierung erfolgreich durchgef�hrt");
+		}
+
+		catch (InvalidKeySpecException e) {
+			e.printStackTrace(ps);
 		} catch (InvalidKeyException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (NoSuchAlgorithmException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (NoSuchPaddingException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (InvalidAlgorithmParameterException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} catch (IOException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		}
 	}
 
@@ -616,50 +608,60 @@ public class DokumenteChunkParallelProcess {
 		DocumentDetails documentResponse = null;
 		String serializedObj = null;
 		if (detailedLogsEnabled)
-			ps.println("Entering into addUser method of AddUserClient");
+			ps.println(dfOut.format(new Date()) + " > " + "Entering into addUser method of AddUserClient");
 		try {
 
 			ObjectMapper mapper = new ObjectMapper();
 			serializedObj = mapper.writeValueAsString(documentDetails);
+
 			if (detailedLogsEnabled)
-				ps.println("serializedObj " + serializedObj);
+				ps.println(dfOut.format(new Date()) + " > " + "serializedObj " + serializedObj);
+
 			for (String[] replacement : replacements) {
 				serializedObj = serializedObj.replace(replacement[0], replacement[1]);
 			}
+			
 			if (detailedLogsEnabled)
-				ps.println(serializedObj);
+				ps.println(dfOut.format(new Date()) + " > " + serializedObj);
+
 			HttpEntity<String> requestEntity = new HttpEntity<>(serializedObj,
 					AuthenticationHeader.getAuthenticationHeader(authUsername, authPassword));
 			RestTemplate templte = new RestTemplate(AuthenticationHeader.httpsRequestFactory());
 			templte.getMessageConverters().add(new MappingJackson2HttpMessageConverter());
 			templte.getMessageConverters().add(0, new StringHttpMessageConverter(Charset.forName("UTF-8")));
 
-			System.out.println("URL :- " + url + "/" + app + "/" + "documents/");
+			if (detailedLogsEnabled)
+				ps.println(dfOut.format(new Date()) + " > " + "URL :- " + url + "/" + app + "/" + "documents/");
 			ResponseEntity<DocumentDetails> response = templte.exchange(url + "/" + app + "/" + "documents/",
 					HttpMethod.POST, requestEntity, DocumentDetails.class);
 
-			System.out.println("Got response:- " + response);
+			if (detailedLogsEnabled)
+				ps.println(dfOut.format(new Date()) + " > " + "Got response:- " + response);
 
 			documentResponse = response.getBody();
+
 			if (documentResponse.getDocument_access_key() == null) {
 				nullResponseReq.add(serializedObj);
 			}
+
 			passedResponsesReq.add(serializedObj);
 		} catch (Exception ex) {
 
-			ps.println("UpdateUserClient Exception :" + ex.getMessage());
+			ps.println(dfOut.format(new Date()) + " > " + "UpdateUserClient Exception : " + ex.getMessage());
+			ps.println(dfOut.format(new Date()) + " > Error in getting response for request object " + serializedObj);
+			ex.printStackTrace();
 			failedresponses.add(serializedObj);
 
 		}
 		return documentResponse;
 	}
 
-	private static List<String> failedresponses = new ArrayList<String>();
-	private static List<String> passedresponses = new ArrayList<String>();
-	private static List<String> passedResponsesReq = new ArrayList<String>();
-	private static List<String> nullResponseReq = new ArrayList<String>();
+	private List<String> failedresponses = new ArrayList<String>();
+	private List<String> passedresponses = new ArrayList<String>();
+	private List<String> passedResponsesReq = new ArrayList<String>();
+	private List<String> nullResponseReq = new ArrayList<String>();
 
-	private String uploadDocument(DokumenteVO dokumentVO) {
+	private String uploadDocument(DokumenteVO objDokumenteVO) {
 
 		String accessKey = null;
 		String url = sdsRestServerURL;
@@ -670,84 +672,85 @@ public class DokumenteChunkParallelProcess {
 		StoreDocumentRequest storeDocumentRequest = new StoreDocumentRequest();
 		try {
 
-			Date date3 = Calendar.getInstance().getTime();
 			SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
 
-			java.sql.Date date1 = null;
-
-			try {
-				date1 = new java.sql.Date(df.parse(df.format(date3)).getTime());
-			} catch (Exception e) {
-				e.printStackTrace();
-			}
-			// ps.println(date1);
-
-			// file name replace with byte array of docgen
+			/** FILE NAME REPLACE WITH BYTE ARRAY OF DOCGEN */
 			storeDocumentRequest.setContent(new Content());
-			storeDocumentRequest.getContent().setSource(SdsEncoding.generateBase64(dokumentVO.getCryptDataByteArray()));
+			storeDocumentRequest.getContent()
+					.setSource(SdsEncoding.generateBase64(objDokumenteVO.getDecryptDataByteArray()));
 
 			if (detailedLogsEnabled)
-				ps.println(storeDocumentRequest.getContent().getSource());
-			storeDocumentRequest.getContent().setChecksum(SdsEncoding.generateMd5(dokumentVO.getCryptDataByteArray()));
+				ps.println(dfOut.format(new Date()) + " > " + " storeDocumentRequest.getContent().getSource() ->> "
+						+ storeDocumentRequest.getContent().getSource());
+			storeDocumentRequest.getContent()
+					.setChecksum(SdsEncoding.generateMd5(objDokumenteVO.getDecryptDataByteArray()));
 
 			if (detailedLogsEnabled)
-				ps.println(storeDocumentRequest.getContent().getChecksum());
+				ps.println(dfOut.format(new Date()) + " > " + " storeDocumentRequest.getContent().getChecksum() ->> "
+						+ storeDocumentRequest.getContent().getChecksum());
 
 			storeDocumentRequest.setAttributes(new Attributes());
-			storeDocumentRequest.getAttributes().setOwner("ZVR");
+			storeDocumentRequest.getAttributes().setOwner(props.getProperty("OwnerOfDocument"));
 			storeDocumentRequest.getAttributes().setGroup("ZVR");
-			// storeDocumentRequest.getAttributes().setTitle(dokumentVO.getDokbez());
 			storeDocumentRequest.getAttributes().setTitle("DOKUMENTEDOKBEZ");
 			storeDocumentRequest.getAttributes().setEncryption("none");
 
-			if (dokumentVO.getCretms() != null) {
-				storeDocumentRequest.getAttributes().setCreatedAt(dokumentVO.getCretms());
+			if (objDokumenteVO.getCretms() != null) {
+				storeDocumentRequest.getAttributes().setCreatedAt(objDokumenteVO.getCretms());
 
-				Calendar c = Calendar.getInstance();
-				c.setTime(dokumentVO.getCretms());
-				c.add(Calendar.YEAR, 5);
-				Date validTo = c.getTime();
+				Calendar calender = Calendar.getInstance();
+				calender.setTime(objDokumenteVO.getCretms());
+				calender.add(Calendar.YEAR, 5);
+				Date validTo = calender.getTime();
 				try {
 					validTo = new java.sql.Date(df.parse(df.format(validTo)).getTime());
 				} catch (Exception e) {
-					e.printStackTrace();
+					e.printStackTrace(ps);
 				}
 				storeDocumentRequest.getAttributes().setValidTo(validTo);
 			}
 
 			storeDocumentRequest.getAttributes().setFileFormat("pdf");
-			storeDocumentRequest.getAttributes().setFileName(getDokumentenartForDoktype(dokumentVO.getDoktyp()));
-			storeDocumentRequest.getAttributes().setBusinessKey("//templates//docgen//DemoGraphicStateAgeWise.pdf");
-			// storeDocumentRequest.getAttributes().setGroup("templates");
 
-			HashMap<String, Object> applicationSpecificData = new HashMap<String, Object>();
-			applicationSpecificData = fillValues(dokumentVO);
+			/**
+			 * As discussed, now this program has to read data from TMPDOKUMENTE
+			 * table, where DOKUMENTART value will be auto populated by talend
+			 * program. Hence removing this code.
+			 */
+			// storeDocumentRequest.getAttributes().setFileName(getDokumentenartForDoktype(dokumentVO.getDoktyp()));
+			storeDocumentRequest.getAttributes().setFileName(objDokumenteVO.getDokumentart());
+
+			storeDocumentRequest.getAttributes().setBusinessKey("//templates//docgen//DemoGraphicStateAgeWise.pdf");
+
+			LinkedHashMap<String, Object> applicationSpecificData = new LinkedHashMap<String, Object>();
+
+			applicationSpecificData = fillValues(objDokumenteVO);
 
 			storeDocumentRequest.getAttributes().setApplicationSpecificData(applicationSpecificData);
 
-			DocumentDetails res = /* StoreDocument. */uploadDocument(url, app, storeDocumentRequest, authUsername,
-					authPassword);
-			if (res != null) {
+			DocumentDetails response = uploadDocument(url, app, storeDocumentRequest, authUsername, authPassword);
+			if (response != null) {
 				if (detailedLogsEnabled)
-					ps.println(res.getDocument_access_key());
-				accessKey = res.getDocument_access_key();
+					ps.println(dfOut.format(new Date()) + " > " + response.getDocument_access_key());
+				accessKey = response.getDocument_access_key();
 			}
 		} catch (Exception e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		}
 
 		if (detailedLogsEnabled)
-			ps.println("DONE");
+			ps.println(dfOut.format(new Date()) + " > " + " The upload of document having DOKID == "
+					+ objDokumenteVO.getDokid() + " has been DONE. Access key recieved == " + accessKey);
 
 		return accessKey;
 
 	}
 
-	private HashMap<String, Object> fillValues(DokumenteVO dokumentVO) {
+	private LinkedHashMap<String, Object> fillValues(DokumenteVO dokumentVO) {
 
 		String[] keys = { "DOKID", "DOKTYPALT", "DOKUMENTENART", "DRUCKTMS", "ALFRESCOKZ", "MELDID", "VMID",
 				"ANZSEITEN", "BEVOLLMNR", "DOKBEZ", "LANDKZ" };
-		HashMap<String, Object> applicationSpecificData = new HashMap<String, Object>();
+		LinkedHashMap<String, Object> applicationSpecificData = new LinkedHashMap<String, Object>();
 
 		for (int i = 0; i < keys.length; i++) {
 			String key = keys[i];
@@ -762,7 +765,14 @@ public class DokumenteChunkParallelProcess {
 				break;
 			case "DOKUMENTENART":
 				applicationSpecificData.put("key2", "DOKTYPALT");
-				applicationSpecificData.put("value2", getDokumentenartForDoktype(dokumentVO.getDoktyp()));
+				/**
+				 * As discussed, now this program has to read data from
+				 * TMPDOKUMENTE table, where DOKUMENTART value will be auto
+				 * populated by talend program. Hence removing this code.
+				 */
+				// applicationSpecificData.put("value2",
+				// getDokumentenartForDoktype(dokumentVO.getDoktyp()));
+				applicationSpecificData.put("value2", dokumentVO.getDokumentart());
 				break;
 			case "DRUCKTMS":
 				applicationSpecificData.put("key3", "DRUCKTMS");
@@ -817,25 +827,33 @@ public class DokumenteChunkParallelProcess {
 				return false;
 			}
 
-			actualRecordsProcessed = listMV.size();
-
 			try (Connection targetConnection = DataSource.getInstance().getTargetConnection();
 					PreparedStatement updateSDSIDPreparedStatement = targetConnection
 							.prepareStatement(updateSDSIDPreparedStatementSQL);
-					Connection sourceConnection = DataSource.getInstance().getSourceConnection();
-					PreparedStatement insertDecryptdataStatusPreparedStatement = sourceConnection
-							.prepareStatement(insertSDSIDStatusPreparedStatementSQL);) {
+
+			// Connection sourceConnection =
+			// DataSource.getInstance().getSourceConnection();
+			// PreparedStatement insertDecryptdataStatusPreparedStatement =
+			// sourceConnection
+			// .prepareStatement(insertSDSIDStatusPreparedStatementSQL);
+			) {
 
 				startTime = new Date();
 
-				// PreparedStatement insertDecryptdataPreparedStatement =
-				// targetConnection
-				// .prepareStatement(insertDecryptdataPreparedStatementSQL);
-
 				for (TMPDokumenteVO mv : listMV) {
-					updateSDSIDPreparedStatement.setString(1, mv.getSdsid());
-					updateSDSIDPreparedStatement.setString(2, mv.getDokid());
-					updateSDSIDPreparedStatement.addBatch();
+					int counter = 1;
+					if (mv.getSdsid() != null) {
+						updateSDSIDPreparedStatement.setString(counter++, mv.getSdsid());
+
+						if (rerunable)
+							updateSDSIDPreparedStatement.setBigDecimal(counter++, new BigDecimal(1));
+
+						updateSDSIDPreparedStatement.setString(counter++, mv.getDokid());
+
+						updateSDSIDPreparedStatement.addBatch();
+						actualRecordsProcessed++;
+					}
+
 				}
 
 				int[] response = updateSDSIDPreparedStatement.executeBatch();
@@ -846,61 +864,54 @@ public class DokumenteChunkParallelProcess {
 
 				if (detailedLogsEnabled)
 					ps.println(dfOut.format(new Date()) + " > Response of save the blob data : " + sb.toString()
-							+ " listMV.size() == " + listMV.size());
+							+ " actualRecordsProcessed == " + actualRecordsProcessed);
 
-				// insertRecordsIntoStatusTable(listMV, response);
+				//
 				////////////////////
 
-				int index = 0;
-
-				for (TMPDokumenteVO mv : listMV) {
-
-					if (response[index] > 0) {
-						insertDecryptdataStatusPreparedStatement.setString(1, mv.getDokid());
-						insertDecryptdataStatusPreparedStatement.setBigDecimal(2, new BigDecimal(1));
-						insertDecryptdataStatusPreparedStatement.addBatch();
-					}
-				}
-
-				int[] response1 = { 1 };// insertDecryptdataStatusPreparedStatement.executeBatch();
-				StringBuffer sb1 = new StringBuffer();
-				for (int i : response1) {
-					sb1.append(i + ",");
-				}
-				if (detailedLogsEnabled)
-					ps.println(dfOut.format(new Date()) + " > Response of save status of the blob data : "
-							+ sb1.toString() + " listMV.size() == " + listMV.size());
+				// int index = 0;
+				//
+				// for (TMPDokumenteVO mv : listMV) {
+				//
+				// if (response[index] > 0) {
+				// insertDecryptdataStatusPreparedStatement.setString(1,
+				// mv.getDokid());
+				// insertDecryptdataStatusPreparedStatement.setBigDecimal(2, new
+				// BigDecimal(1));
+				// insertDecryptdataStatusPreparedStatement.addBatch();
+				// }
+				// }
+				//
+				// int[] response1 = { 1 };//
+				// insertDecryptdataStatusPreparedStatement.executeBatch();
+				// StringBuffer sb1 = new StringBuffer();
+				// for (int i : response1) {
+				// sb1.append(i + ",");
+				// }
+				// if (detailedLogsEnabled)
+				// ps.println(dfOut.format(new Date()) + " > Response of
+				// save
+				// status of the blob data : "
+				// + sb1.toString() + " listMV.size() == " + listMV.size());
 
 				///////////////////
 
 				targetConnection.commit();
-				sourceConnection.commit();
-				// insertDecryptdataPreparedStatement.close();
+				// sourceConnection.commit();
+
 			} catch (SQLException e) {
-				e.printStackTrace();
+				e.printStackTrace(ps);
 
 			} catch (PropertyVetoException e) {
-				e.printStackTrace();
+				e.printStackTrace(ps);
 			}
-
-			// for (TMPDokumenteVO mv : listMV) {
-			// if (mv.getByteArrayInputStream() != null) {
-			// mv.getByteArrayInputStream().close();
-			// }
-			// if (mv.getInputStream() != null) {
-			// mv.getInputStream().close();
-			// }
-			// if (mv.getByteArrayOutputStream() != null) {
-			// mv.getByteArrayOutputStream().close();
-			// }
-			// }
 
 			if (detailedLogsEnabled)
 				ps.println(dfOut.format(new Date()) + " > INFO  XML-Dokument mit der ID " + listMV.size() + " meld ids "
 						+ " wurde erfolgreich in Zieldatenbank generiert (BATCH-INSERT)");
 
 		} catch (IOException e) {
-			e.printStackTrace();
+			e.printStackTrace(ps);
 		} finally {
 			endTime = new Date();
 
@@ -915,13 +926,6 @@ public class DokumenteChunkParallelProcess {
 							+ " > TRP : %d | ETTM : %.3f minutes | ARP : %d | ETAS : %.3f seconds. | RPM : %.3f records/min \n",
 					totalRecProc, ettm, actualRecordsProcessed,
 					(((double) (endTime.getTime() - startTime.getTime()) / 1000)), ((double) totalRecProc / ettm));
-
-			// ps.printf(
-			// dfOut.format(new Date())
-			// + " > TRP : %d | ETTM : %.3f minutes | ARP : %d | ETAS : %.3f
-			// seconds. \n",
-			// totalRecordsProcessed, ettm, actualRecordsProcessed,
-			// (((double) (endTime.getTime() - startTime.getTime()) / 1000)));
 		}
 
 		return true;
@@ -939,26 +943,27 @@ public class DokumenteChunkParallelProcess {
 
 	public static void main(String[] args) {
 
-		try {
-			ps = new PrintStream(new FileOutputStream("C:/Users/premendra.kumar/Desktop/MeldIDBlobUpdate.txt"));
-		} catch (FileNotFoundException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
+		ps = System.out;
 
-		if (detailedLogsEnabled)
-			ps.println(dfOut.format(new Date()) + " > INFO  START " + DokumenteChunkParallelProcess.class.getName());
 		try {
 			if (args != null && args.length == 1) {
 				initialisiere(args);
-
+				String logFileLocation = props.getProperty("LogFileLocation");
+				try {
+					ps = new PrintStream(new FileOutputStream(logFileLocation));
+				} catch (Exception e) {
+					// e.printStackTrace();
+					System.out.println("Error in getting logfile location : " + logFileLocation
+							+ " All logs will be written to console only");
+				}
+				ps.println(
+						dfOut.format(new Date()) + " > INFO  START " + DokumenteChunkParallelProcess.class.getName());
 				if ("1".equals(props.getProperty("FromDatabaseParallelDecrypt"))) {
 					doInitialSettings();
 					entryForProcessing();
 				}
-
 			} else {
-				ps.println(dfOut.format(new Date())
+				System.out.println(dfOut.format(new Date())
 						+ " > Please enter only one parameter with the full path and name of the properties file");
 			}
 		} finally {
